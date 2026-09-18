@@ -1,0 +1,19 @@
+# Build context hygiene: keep the image build small and reproducible.
+.git
+.github
+.venv*
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+*.pyc
+.coverage
+.coverage.*
+htmlcov
+dist
+build
+*.egg-info
+models
+tests
+Dockerfile
+.dockerignore

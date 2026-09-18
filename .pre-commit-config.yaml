@@ -1,0 +1,41 @@
+# Pre-commit hooks for signal-asr-strategies.
+# Requires: betterleaks and ruff on PATH (e.g. via mise).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  - repo: local
+    hooks:
+      - id: betterleaks
+        name: betterleaks (secrets scan of staged changes)
+        entry: betterleaks git --staged --pre-commit
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: ruff
+        name: ruff lint
+        entry: uvx ruff@0.15.14 check --force-exclude
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uvx ruff@0.15.14 format --force-exclude
+        language: system
+        types: [python]
+
+      - id: pytest
+        name: pytest (unit tests)
+        entry: uv run --locked --extra dev --extra server pytest tests/ -q -m "not integration"
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
