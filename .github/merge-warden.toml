@@ -1,0 +1,17 @@
+# Merge Warden policy for this repository.
+# See https://pvandervelde.github.io/merge_warden/ for the full option list.
+[pr]
+# Conventional-commit PR titles (feat:, fix:, chore:, refactor:, test:, docs:, ci:).
+title_regex = "^(feat|fix|chore|refactor|test|docs|ci|build|perf)(\\([^)]+\\))?!?: .+"
+require_work_item = false
+size_labels = true
+
+[labels]
+# Map conventional commit types to repository labels.
+"fix" = "bug"
+"feat" = "enhancement"
+"test" = "testing"
+"docs" = "documentation"
+"ci" = "ci"
+"chore" = "maintenance"
+"refactor" = "maintenance"
