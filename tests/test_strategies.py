@@ -1,4 +1,4 @@
-"""Unit tests for ASR strategy implementations (A03/A05/A06/A16).
+"""Unit tests for ASR strategy implementations.
 
 Heavy backends (faster-whisper, NeMo/torch, sherpa-onnx) are exercised
 through strict fakes at the module seams; the integration track runs the
@@ -20,7 +20,7 @@ from signal_asr.strategies import whisper as whisper_module
 from signal_asr.strategies.whisper import resolve_whisper_device
 
 # --------------------------------------------------------------------- #
-# Whisper device / compute-type mapping (A03)
+# Whisper device / compute-type mapping
 # --------------------------------------------------------------------- #
 
 
@@ -128,7 +128,7 @@ def test_whisper_strategy_passes_mapped_device_and_compute_type(monkeypatch):
     strategy.load_model()
 
     model = _RecordingWhisperModel.instances[-1]
-    # A03: CPU must not receive float16; index is absent for plain cpu.
+    # CPU must not receive float16; index is absent for plain cpu.
     assert model.kwargs["device"] == "cpu"
     assert model.kwargs["compute_type"] == "int8"
     assert "device_index" not in model.kwargs
@@ -187,7 +187,7 @@ def test_whisper_transcribe_odd_byte_chunk_is_aligned(monkeypatch):
 
 
 # --------------------------------------------------------------------- #
-# Parakeet via seams (A05/A06/A16)
+# Parakeet via seams
 # --------------------------------------------------------------------- #
 
 
@@ -372,7 +372,7 @@ def fake_torch(monkeypatch):
 
 
 def test_parakeet_module_imports_without_torch_or_nemo():
-    """A16: the module itself must stay importable on minimal installs."""
+    """The module itself must stay importable on minimal installs."""
     import importlib
 
     spec = importlib.util.find_spec("signal_asr.strategies.parakeet")
@@ -389,7 +389,7 @@ def test_parakeet_load_places_model_on_requested_device(monkeypatch, fake_torch)
     strategy = parakeet_module.ParakeetASRStrategy(config, "cpu", "linux")
     strategy.load_model()
 
-    assert model.placed_on == ["cpu"], "requested device must be applied (A05)"
+    assert model.placed_on == ["cpu"], "requested device must be applied"
     assert model.eval_called == 1
     assert strategy.is_loaded
 
@@ -434,7 +434,7 @@ def test_parakeet_transcribe_empty_hypotheses_returns_empty(monkeypatch, fake_to
 
 
 def test_parakeet_transcribe_empty_text_is_returned_verbatim(monkeypatch, fake_torch):
-    """A06: an empty transcript must not become a stringified hypothesis."""
+    """An empty transcript must not become a stringified hypothesis."""
     model = _FakeNemoModel(text="")
     _install_fake_nemo(monkeypatch, model)
     strategy = parakeet_module.ParakeetASRStrategy(ASRConfig(engine="parakeet"), "auto", "linux")
@@ -442,7 +442,7 @@ def test_parakeet_transcribe_empty_text_is_returned_verbatim(monkeypatch, fake_t
 
 
 def test_parakeet_transcribe_missing_text_attribute_raises(monkeypatch, fake_torch):
-    """A06: a backend contract violation must surface, not stringify."""
+    """A backend contract violation must surface, not stringify."""
     model = _FakeNemoModel(hyps=[object()])  # object() has no .text
     _install_fake_nemo(monkeypatch, model)
     strategy = parakeet_module.ParakeetASRStrategy(ASRConfig(engine="parakeet"), "auto", "linux")
@@ -458,6 +458,25 @@ def test_parakeet_transcribe_odd_bytes(monkeypatch, fake_torch):
     assert strategy.transcribe(b"\x00") == ""
     # One and a half samples: the complete sample is still transcribed.
     assert strategy.transcribe(b"\x00\x00\x00") == "x"
+
+
+def test_parakeet_frombuffer_receives_writable_buffer(monkeypatch, fake_torch):
+    """``torch.frombuffer`` warns on read-only ``bytes``; a copy is passed."""
+    model = _FakeNemoModel(text="x")
+    _install_fake_nemo(monkeypatch, model)
+    seen: list[Any] = []
+    original = fake_torch.frombuffer
+
+    def recording(buffer, dtype=None):
+        seen.append(buffer)
+        return original(buffer, dtype=dtype)
+
+    monkeypatch.setattr(fake_torch, "frombuffer", recording)
+    strategy = parakeet_module.ParakeetASRStrategy(ASRConfig(engine="parakeet"), "auto", "linux")
+    assert strategy.transcribe(b"\x01\x00\x02\x00") == "x"
+    assert len(seen) == 1
+    assert isinstance(seen[0], bytearray)
+    assert seen[0] == b"\x01\x00\x02\x00"
 
 
 def test_parakeet_shutdown_clears_model(monkeypatch, fake_torch):
@@ -507,7 +526,7 @@ def test_sherpa_accepts_plain_cuda_and_cpu(monkeypatch):
 
 
 def test_sherpa_cuda_discovery_uses_dlls_not_directory_names(monkeypatch, tmp_path):
-    """A11: a CUDA 12 install in a custom root must be detected via DLLs."""
+    """A CUDA 12 install in a custom root must be detected via DLLs."""
     custom_root = tmp_path / "Toolkit"  # deliberately un-versioned name
     custom_bin = custom_root / "bin"
     custom_bin.mkdir(parents=True)

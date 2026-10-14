@@ -1,4 +1,4 @@
-"""Deep coverage for sherpa-onnx and whisperkit paths (A16/D coverage goal).
+"""Deep coverage for sherpa-onnx and whisperkit paths.
 
 These tests exercise the platform-specific branches through injectable
 seams (fake sherpa module, fake subprocess/requests) so Windows and macOS
@@ -88,7 +88,7 @@ def test_sherpa_cuda_uses_single_thread_and_cuda_provider(monkeypatch, tmp_path)
     )
     strategy.load_model()
     kwargs = strategy.recognizer.constructor_kwargs
-    # CUDA uses the cuda provider with a single thread (A13/D contract).
+    # CUDA uses the cuda provider with a single thread.
     assert kwargs["provider"] == "cuda"
     assert kwargs["num_threads"] == 1
 

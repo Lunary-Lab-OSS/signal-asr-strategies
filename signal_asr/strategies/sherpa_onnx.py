@@ -11,7 +11,7 @@ Platform notes:
 
 sherpa-onnx ``OfflineRecognizer`` does not document thread-safe concurrent
 ``decode_stream`` use, so each strategy instance serialises transcription
-through :attr:`_decode_lock` (A13/D: per-backend concurrency policy).
+through :attr:`_decode_lock`.
 """
 
 from __future__ import annotations
@@ -46,8 +46,8 @@ _CUDNN_DLLS = ("cudnn64_9.dll", "cudnn64_8.dll")
 class SherpaOnnxASRStrategy(ASRStrategy):
     """Sherpa-ONNX (Parakeet TDT 0.6B v3 INT8) ASR strategy.
 
-    Works on Windows (CUDA), Linux, and WSL2.  Falls back to CPU only when
-    ``device`` does not start with ``"cuda"``.
+    Works on Windows (CUDA), Linux, and WSL2. ``device`` must be ``"cpu"`` or
+    ``"cuda"``; any other value is rejected by :meth:`load_model`.
     """
 
     def __init__(
@@ -147,7 +147,7 @@ class SherpaOnnxASRStrategy(ASRStrategy):
         if not audio_chunk:
             return ""
         if self.recognizer is None:
-            self.load_model()
+            self._ensure_loaded()
 
         # Streaming chunk boundaries can deliver an odd number of bytes;
         # drop the trailing partial 16-bit sample so frombuffer stays aligned.
@@ -227,8 +227,6 @@ class SherpaOnnxASRStrategy(ASRStrategy):
         override = os.getenv("SIGNAL_ASR_MODELS_DIR")
         if override:
             return Path(override)
-        if sys.platform == "win32":
-            return Path(r"C:\workspace\artifacts\models")
         return Path("models")
 
     # ------------------------------------------------------------------ #
@@ -295,7 +293,7 @@ class SherpaOnnxASRStrategy(ASRStrategy):
         Returns ``(bin_path, runtime_major)`` or ``None``. Detection is based
         on real runtime DLL filenames rather than assumptions encoded in the
         directory name, so custom install roots work as well as the NVIDIA
-        defaults (A11).
+        defaults.
         """
         for directory in cls._cuda_candidate_dirs():
             if not directory or not os.path.isdir(directory):
@@ -322,7 +320,7 @@ class SherpaOnnxASRStrategy(ASRStrategy):
         import ctypes
         import glob
 
-        ctypes = ctypes  # keep mypy aware of the platform-only API
+        # ``WinDLL`` only exists on Windows; look it up dynamically.
         load_dll = getattr(ctypes, "WinDLL", None)
         core = (
             ["cudart64_12.dll", "cublas64_12.dll"]

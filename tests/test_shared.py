@@ -1,4 +1,4 @@
-"""Tests for shared ASR utilities (A10)."""
+"""Tests for shared ASR utilities."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def test_save_audio_to_wav_writes_valid_header_and_frames(tmp_path):
 
 
 def test_save_audio_to_wav_cleans_up_when_header_write_fails(tmp_path, monkeypatch):
-    """A10: a failure mid-write must not leak the temporary file."""
+    """A failure mid-write must not leak the temporary file."""
     created: list[str] = []
 
     real_named_temporary_file = save_audio_to_wav.__globals__["tempfile"].NamedTemporaryFile
@@ -137,8 +137,14 @@ def test_save_audio_to_wav_directory_parameter_is_honoured(tmp_path):
     cleanup_temp_file(path)
 
 
-def test_wav_independent_helpers_use_mock_lock(tmp_path):
-    # Guard against regressions in cleanup semantics under concurrent calls.
+def test_cleanup_temp_file_skips_unlink_for_missing_path(tmp_path):
+    # A path that no longer exists must not reach ``os.unlink`` at all.
     with mock.patch.object(os, "unlink", side_effect=PermissionError) as failing:
         cleanup_temp_file(str(tmp_path / "whatever.wav"))
     failing.assert_not_called()
+
+
+def test_cleanup_temp_file_tolerates_undeletable_path(tmp_path):
+    # Unlinking a directory raises OSError; cleanup stays best-effort.
+    cleanup_temp_file(str(tmp_path))
+    assert tmp_path.is_dir()

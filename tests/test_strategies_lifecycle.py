@@ -166,14 +166,14 @@ def test_sherpa_downloads_missing_models(monkeypatch, tmp_path):
     assert downloaded["repo_id"].endswith("parakeet-tdt-0.6b-v3-int8")
     assert downloaded["revision"] == "2bda32ec70b097a55adaa07d9a7173915b43cc78"
     assert strategy.model_dir == tmp_path / downloaded["repo_id"].replace("/", "--")
-    # The download is restricted to the files this strategy loads (A04).
+    # The download is restricted to the files this strategy loads.
     assert set(downloaded["allow_patterns"]) == {
         "encoder.int8.onnx",
         "decoder.int8.onnx",
         "joiner.int8.onnx",
         "tokens.txt",
     }
-    # The removed huggingface_hub 1.x argument must not be passed (A04).
+    # The removed huggingface_hub 1.x argument must not be passed.
     assert "local_dir_use_symlinks" not in downloaded
     assert "cache_dir" not in downloaded
 
