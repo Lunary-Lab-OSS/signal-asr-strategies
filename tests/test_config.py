@@ -32,7 +32,7 @@ def test_model_config_defaults():
 
 
 def test_every_sherpa_extra_declares_huggingface_hub():
-    """Audit private F04: extras promising the Sherpa backend must ship the
+    """Extras promising the Sherpa backend must ship the
     downloader the cold-start ``load_model`` path imports.
 
     The default Sherpa model is fetched via ``huggingface_hub`` when the

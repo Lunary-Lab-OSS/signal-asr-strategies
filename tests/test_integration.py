@@ -4,7 +4,7 @@ Enable with ``SIGNAL_ASR_INTEGRATION=1``. These tests download small real
 models on first run and therefore need network access; the docker test
 additionally needs a working Docker daemon.
 
-Oracles (A15):
+Oracles:
 - The container runs its *actual* default command (not curl), on a
   non-default port driven by environment, and the health check matches.
 - A real transcription request must return HTTP 200 with a JSON object
@@ -208,10 +208,10 @@ def test_local_server_transcribes_real_speech(tmp_path):
 
 @REQUIRES_INTEGRATION
 def test_docker_image_builds_starts_and_serves():
-    """A15: build the image, run its default command, and transcribe.
+    """Build the image, run its default command, and transcribe.
 
     The container must serve on the port chosen *via environment*, proving
-    the Dockerfile CMD and health check agree (A14). Any connection error,
+    the Dockerfile CMD and health check agree. Any connection error,
     timeout, or non-200 response fails the test. When espeak-ng is present
     the upload is real synthesized speech and the transcript must contain
     the spoken words; otherwise the tone oracle still proves the pipeline.

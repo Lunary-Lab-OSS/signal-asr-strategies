@@ -3,15 +3,15 @@
 Resource-safety contract (enforced here, tested in tests/test_server.py):
 
 - The total HTTP request body is capped *while streaming* from the ASGI
-  receive channel, before multipart parsing buffers anything (A01).
+  receive channel, before multipart parsing buffers anything.
 - Each uploaded file is capped independently of multipart overhead.
 - Decoded PCM output and ffmpeg diagnostics are bounded; ffmpeg is killed
-  and reaped when a decoding budget is exceeded (A02).
+  and reaped when a decoding budget is exceeded.
 - Concurrent decoding and inference are admitted through bounded slots with
-  queue deadlines; overload produces 503, never unbounded queues (A02).
+  queue deadlines; overload produces 503, never unbounded queues.
 - Loaded strategies are cached per canonical engine identity with
   per-key single-flight initialisation and reference-counted disposal so a
-  strategy is never closed while a request is still using it (A13).
+  strategy is never closed while a request is still using it.
 
 NOTE: keep this module free of ``from __future__ import annotations`` —
 FastAPI resolves endpoint parameter annotations against module globals,
@@ -65,11 +65,27 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 #: Maximum total HTTP request body (bytes). Slightly larger than the file
 #: cap to allow multipart framing overhead for a maximum-size file.
 MAX_REQUEST_BODY_BYTES = MAX_UPLOAD_BYTES + 2 * 1024 * 1024
+
+
+def _import_time_int_env(name: str, default: int) -> int:
+    """Read a positive integer at import time, falling back to ``default``.
+
+    Import must not crash on a malformed value; :func:`validate_runtime_config`
+    rejects it with a descriptive error when the server starts.
+    """
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
 #: Maximum decoded PCM bytes (16 kHz mono s16le => 32,000 bytes/second).
-MAX_DECODED_AUDIO_BYTES = 16_000 * 2 * int(os.getenv("SIGNAL_ASR_MAX_DECODED_SECONDS", "600"))
+MAX_DECODED_AUDIO_BYTES = 16_000 * 2 * _import_time_int_env("SIGNAL_ASR_MAX_DECODED_SECONDS", 600)
 #: Maximum retained ffmpeg stderr (bytes).
 MAX_FFMPEG_STDERR_BYTES = 64 * 1024
-FFMPEG_TIMEOUT_SECONDS = float(os.getenv("SIGNAL_ASR_FFMPEG_TIMEOUT", "60"))
+#: Default ffmpeg deadline; ``SIGNAL_ASR_FFMPEG_TIMEOUT`` overrides it per call.
+FFMPEG_TIMEOUT_SECONDS = 60.0
 
 # --- Concurrency admission --------------------------------------------- #
 
@@ -110,19 +126,25 @@ def validate_runtime_config() -> None:
     _positive_int_env("SIGNAL_ASR_MAX_DECODED_SECONDS", 600)
     _positive_int_env("SIGNAL_ASR_MAX_CONCURRENT_REQUESTS", 4)
     _ffmpeg_timeout()
+    override = os.getenv("SIGNAL_ASR_ENGINE")
+    if override is not None and canonical_engine(override) is None:
+        raise RuntimeError(f"SIGNAL_ASR_ENGINE names an unknown engine: {override!r}")
 
 
 class _BoundedSemaphore:
-    """``threading.Semaphore`` with a deadline-aware ``try_acquire``."""
+    """``threading.BoundedSemaphore`` with a deadline-aware ``try_acquire``.
+
+    Releasing more permits than were acquired raises ``ValueError`` instead
+    of silently raising the concurrency limit.
+    """
 
     def __init__(self, permits: int) -> None:
-        self._sem = threading.Semaphore(permits)
+        self._sem = threading.BoundedSemaphore(permits)
 
     def try_acquire(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
-        # Poll in small slices so a stuck caller cannot hold us past the
-        # deadline without giving up (Semaphore.acquire has no timeout arg
-        # compatible with KeyboardInterrupt handling on all platforms).
+        # Wait in short slices so the calling thread stays responsive to
+        # interrupts while honouring the overall deadline.
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -142,13 +164,20 @@ class BackendUnavailableError(RuntimeError):
     """Raised when a known engine's optional dependencies are missing.
 
     The HTTP layer answers 503 with the install hint so clients see a
-    structured failure instead of a bare traceback (public audit F3).
+    structured failure instead of a bare traceback.
+    """
+
+
+class DecoderUnavailableError(RuntimeError):
+    """Raised when the ffmpeg binary needed to decode uploads is missing.
+
+    This is a server deployment problem, so the HTTP layer answers 503
+    rather than blaming the client's upload.
     """
 
 
 #: Engines that self-restrict to exactly one platform. Requesting them
-#: anywhere else is a client error and is rejected before upload processing
-#: (public audit F3: whisperkit on Linux previously surfaced as a plain 500).
+#: anywhere else is a client error and is rejected before upload processing.
 _PLATFORM_EXCLUSIVE_ENGINES = {"whisperkit": "macos"}
 
 
@@ -188,7 +217,7 @@ class _Admission:
 
 _admission = _Admission()
 
-# --- Strategy cache (A12/A13) ------------------------------------------- #
+# --- Strategy cache ------------------------------------------------------ #
 
 
 class _CachedStrategy:
@@ -357,7 +386,7 @@ def _engine_from_model(model: str) -> str:
 
     Raises ``ValueError`` for names that do not name a known backend; the
     HTTP layer turns that into a 400 rather than silently loading the
-    default engine for a typo (A12).
+    default engine for a typo.
     """
     override = os.getenv("SIGNAL_ASR_ENGINE")
     if override is not None:
@@ -380,7 +409,7 @@ def _source_identity(model_loader: Any, models_dir: Any) -> tuple[str, str]:
 
     Two strategy requests with identical canonical engine/device/platform but
     different source directories or loader callables must not collide in the
-    shared cache (audit F04). ``repr`` is stable for paths and loader
+    shared cache. ``repr`` is stable for paths and loader
     instances across calls within a process.
     """
     return (
@@ -424,7 +453,7 @@ def transcribe_audio_bytes(
     # an unauthenticated form field mint unbounded cache entries and force
     # a model load per value. Source identity (models_dir/model_loader) IS
     # part of the key so two deployments sharing the process cache cannot
-    # silently reuse each other's weights (audit F04).
+    # silently reuse each other's weights.
     source_identity = _source_identity(model_loader, models_dir)
     cache_key = (engine, resolved_device, resolved_platform, source_identity)
     active_cache = cache if cache is not None else _strategy_cache
@@ -445,7 +474,7 @@ def transcribe_audio_bytes(
                 strategy.load_model()
         except ImportError as exc:
             # Missing optional backend dependencies get a structured 503
-            # with the strategy's install hint (public audit F3).
+            # with the strategy's install hint.
             _close_strategy(strategy)
             raise BackendUnavailableError(str(exc)) from exc
         except BaseException:
@@ -463,7 +492,7 @@ def transcribe_audio_bytes(
     return text
 
 
-# --- Audio decoding (A02/A08) ------------------------------------------- #
+# --- Audio decoding ------------------------------------------------------ #
 
 RAW_AUDIO_CONTENT_TYPES = {
     "audio/pcm",
@@ -477,7 +506,7 @@ RAW_AUDIO_CONTENT_TYPES = {
 _LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$")
 RAW_AUDIO_EXTENSIONS = (".pcm", ".raw", ".s16le")
 # Encoded container extensions that must go through ffmpeg even when the
-# client sent a generic content type such as application/octet-stream (A08).
+# client sent a generic content type such as application/octet-stream.
 ENCODED_AUDIO_EXTENSIONS = (
     ".wav",
     ".mp3",
@@ -509,7 +538,7 @@ ENCODED_AUDIO_MAGIC = (
 def _looks_encoded(audio_bytes: bytes, filename: str | None, content_type: str | None) -> bool:
     """Decide whether the upload must be decoded rather than passed through.
 
-    Precedence (A08): an explicit raw content type or raw file extension
+    Precedence: an explicit raw content type or raw file extension
     means raw passthrough; otherwise a known encoded container extension or
     a container magic prefix forces decoding — including for generic
     ``application/octet-stream`` uploads, which prove nothing about the
@@ -545,7 +574,7 @@ def decode_audio_for_strategy(
 
     Decoding runs ffmpeg as a subprocess with bounded stdout (decoded PCM
     budget), bounded stderr retention, and an overall deadline; the process
-    is killed and reaped when any budget is exceeded (A02).
+    is killed and reaped when any budget is exceeded.
     """
     if not _looks_encoded(audio_bytes, filename, content_type):
         if len(audio_bytes) > MAX_DECODED_AUDIO_BYTES:
@@ -588,7 +617,9 @@ def decode_audio_for_strategy(
     try:
         return _run_bounded_ffmpeg(cmd, audio_bytes)
     except FileNotFoundError as exc:
-        raise RuntimeError("ffmpeg is required to decode uploaded audio formats") from exc
+        raise DecoderUnavailableError(
+            "ffmpeg is required to decode uploaded audio formats"
+        ) from exc
 
 
 def ffmpeg_available() -> bool:
@@ -596,6 +627,9 @@ def ffmpeg_available() -> bool:
     import shutil
 
     return shutil.which("ffmpeg") is not None
+
+
+_FFMPEG_ADDRESS_RE = re.compile(r"\s*@\s*0x[0-9a-fA-F]+")
 
 
 def _run_bounded_ffmpeg(cmd: list[str], audio_bytes: bytes) -> bytes:
@@ -679,6 +713,10 @@ def _run_bounded_ffmpeg(cmd: list[str], audio_bytes: bytes) -> bytes:
 
     def _fail(reason: str, detail: str = "") -> RuntimeError:
         err = b"".join(stderr_chunks).decode("utf-8", errors="replace").strip()
+        # ffmpeg prefixes log lines with in-process object addresses
+        # ("[in#0 @ 0x55d...]"); they are meaningless to clients and leak
+        # memory layout, so strip them from client-facing text.
+        err = _FFMPEG_ADDRESS_RE.sub("", err)
         text = err or detail
         if len(text) > max_error_detail:
             text = text[:max_error_detail] + "…"
@@ -773,7 +811,7 @@ def _verbose_json_response(
     }
 
 
-# --- ASGI body-size middleware (A01) ------------------------------------ #
+# --- ASGI body-size middleware ------------------------------------------ #
 
 
 class RequestBodyLimitMiddleware:
@@ -865,8 +903,17 @@ async def _app_lifespan(app):
         app.state.stopping = True
         if app.state.requests:
             await asyncio.gather(*app.state.requests, return_exceptions=True)
-        app.state.executor.shutdown(wait=True)
-        app.state.cache.close_all()
+        # Both calls can block (worker join, backend shutdown); keep them
+        # off the event loop.
+        await asyncio.to_thread(app.state.executor.shutdown, wait=True)
+        await asyncio.to_thread(app.state.cache.close_all)
+
+
+#: Keyword arguments accepted by :func:`create_app` (forwarded to
+#: :func:`transcribe_audio_bytes` except ``cache``/``admission`` overrides).
+_CREATE_APP_OPTIONS = frozenset(
+    {"cache", "admission", "device", "platform", "model_loader", "models_dir"}
+)
 
 
 def create_app(**kwargs: Any):
@@ -876,6 +923,9 @@ def create_app(**kwargs: Any):
     ``signal-asr-strategies[server]`` to run the app. Keyword arguments are
     reserved for dependency injection in tests (cache/admission overrides).
     """
+    unknown = set(kwargs) - _CREATE_APP_OPTIONS
+    if unknown:
+        raise TypeError(f"create_app() got unexpected keyword arguments: {sorted(unknown)}")
     validate_runtime_config()
 
     try:
@@ -886,6 +936,10 @@ def create_app(**kwargs: Any):
             "The signal ASR server requires optional dependencies. "
             'Install with: pip install "signal-asr-strategies[server]"'
         ) from exc
+    try:
+        from python_multipart.exceptions import FormParserError
+    except ImportError:  # pragma: no cover - python-multipart < 0.0.13
+        from multipart.exceptions import FormParserError  # type: ignore[no-redef]
     app = FastAPI(
         title="signal-asr local transcription server",
         lifespan=_app_lifespan,
@@ -933,8 +987,16 @@ def create_app(**kwargs: Any):
         return await asyncio.shield(task)
 
     async def handle_request(request):
-        async with request.form() as form:
+        try:
+            form = await request.form()
+        except FormParserError as exc:
+            # Starlette only maps its own MultiPartException to 400; parser
+            # errors from python-multipart would otherwise surface as 500.
+            raise HTTPException(status_code=400, detail="malformed multipart body") from exc
+        try:
             return await handle_form(form)
+        finally:
+            await form.close()
 
     async def handle_form(form):
         try:
@@ -945,14 +1007,12 @@ def create_app(**kwargs: Any):
             ) from exc
         except BackendUnavailableError as exc:
             # Known backend whose optional dependencies are absent: 503 with
-            # the install hint, diagnostics preserved in the server log
-            # (public audit F3).
+            # the install hint, diagnostics preserved in the server log.
             logger.warning("backend dependency missing", exc_info=True)
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             # Transient backend initialisation/runtime failure: answer a
-            # sanitised 503 while keeping the full diagnostic in the log
-            # (public audit F3).
+            # sanitised 503 while keeping the full diagnostic in the log.
             logger.warning("backend load or inference failed", exc_info=True)
             raise HTTPException(
                 status_code=503,
@@ -976,12 +1036,12 @@ def create_app(**kwargs: Any):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         # Fail fast on a known-but-platform-ineligible engine before any
-        # upload processing (public audit F3): a descriptive 400 replaces
-        # the previous bare 500 raised deep inside load_model.
+        # upload processing, using the same platform the worker will use.
+        request_platform = kwargs.get("platform") or _detect_platform()
         try:
             _check_engine_platform(
-                engine or default_engine_for_platform(_detect_platform()),
-                _detect_platform(),
+                engine or default_engine_for_platform(request_platform),
+                request_platform,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1006,8 +1066,7 @@ def create_app(**kwargs: Any):
                     detail="temperature must be a valid number",
                 ) from exc
             # Nonfinite values would silently pass float(); reject them at
-            # the boundary so a future caller cannot poison inference state
-            # (audit F05).
+            # the boundary so a future caller cannot poison inference state.
             if not math.isfinite(temperature):
                 raise HTTPException(
                     status_code=400,
@@ -1035,7 +1094,7 @@ def create_app(**kwargs: Any):
         )
 
         # Bound the file read itself to the cap + 1 byte so oversized files
-        # are detected without buffering more than the limit (A01).
+        # are detected without buffering more than the limit.
         chunks: list[bytes] = []
         total = 0
         while total <= MAX_UPLOAD_BYTES:
@@ -1054,7 +1113,7 @@ def create_app(**kwargs: Any):
         filename = getattr(file, "filename", None)
         content_type = getattr(file, "content_type", None)
         try:
-            # A02: decoding is admitted through a bounded slot just like
+            # Decoding is admitted through a bounded slot just like
             # inference — concurrent uploads cannot spawn unbounded ffmpeg
             # processes.
             audio_bytes = await run_worker(
@@ -1069,6 +1128,9 @@ def create_app(**kwargs: Any):
             raise HTTPException(
                 status_code=503, detail=str(exc), headers={"Retry-After": "5"}
             ) from exc
+        except DecoderUnavailableError as exc:
+            logger.error("audio decoder unavailable", exc_info=True)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1083,7 +1145,13 @@ def create_app(**kwargs: Any):
                 **kwargs,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # Model name and platform were validated above, so a ValueError
+            # here comes from backend configuration (e.g. an unsupported
+            # SIGNAL_ASR_DEVICE). Keep the detail in the log, not the reply.
+            logger.error("backend rejected its configuration", exc_info=True)
+            raise HTTPException(
+                status_code=500, detail="transcription backend is misconfigured"
+            ) from exc
         except OverloadedError as exc:
             raise HTTPException(
                 status_code=503, detail=str(exc), headers={"Retry-After": "5"}
@@ -1102,10 +1170,6 @@ def create_app(**kwargs: Any):
         return JSONResponse({"text": text})
 
     return app
-
-
-async def _shutdown_cache() -> None:
-    await asyncio.to_thread(reset_strategy_cache)
 
 
 def main(argv: list[str] | None = None) -> int:
