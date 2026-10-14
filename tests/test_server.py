@@ -1,13 +1,13 @@
 """Unit tests for the bounded-resource transcription server.
 
-Covers the remediation contract:
+Covers the resource-safety contract:
 
-- A01 streaming request-body cap (ASGI-level, no Content-Length needed)
-- A02 bounded decoding + admission control (503 on overload)
-- A08 encoded/raw classification precedence
-- A09 request-scoped form cleanup
-- A12 canonical engine validation + cache configuration
-- A13 single-flight loading, LRU eviction, reference-counted disposal
+- streaming request-body cap (ASGI-level, no Content-Length needed)
+- bounded decoding + admission control (503 on overload)
+- encoded/raw classification precedence
+- request-scoped form cleanup
+- canonical engine validation + cache configuration
+- single-flight loading, LRU eviction, reference-counted disposal
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _factory_configs():
 
 
 # --------------------------------------------------------------------- #
-# Engine resolution (A12)
+# Engine resolution
 # --------------------------------------------------------------------- #
 
 
@@ -179,7 +179,7 @@ def test_engine_name_is_normalized():
 
 
 # --------------------------------------------------------------------- #
-# Strategy cache (A13)
+# Strategy cache
 # --------------------------------------------------------------------- #
 
 
@@ -230,7 +230,7 @@ def test_cache_single_flight_concurrent_same_key():
 
 
 def test_cache_hit_does_not_wait_for_other_key_initialisation():
-    """A slow new-key load must not block an already-cached key (A13)."""
+    """A slow new-key load must not block an already-cached key."""
     server.transcribe_audio_bytes(b"pcm", model="sherpa_onnx")
     assert len(_factory_configs()) == 1
 
@@ -369,7 +369,7 @@ def test_runtime_config_validation(monkeypatch):
 
 
 # --------------------------------------------------------------------- #
-# Admission control (A02)
+# Admission control
 # --------------------------------------------------------------------- #
 
 
@@ -418,7 +418,7 @@ def test_server_returns_503_when_inference_saturated(client, monkeypatch):
 
 
 # --------------------------------------------------------------------- #
-# Encoded vs raw classification (A08)
+# Encoded vs raw classification
 # --------------------------------------------------------------------- #
 
 
@@ -491,7 +491,7 @@ def test_decode_audio_for_strategy_encoded_invokes_ffmpeg(monkeypatch):
 
 
 def test_encoded_upload_with_octet_stream_content_type_is_decoded(client, monkeypatch):
-    """A08: generic binary MIME must not bypass decoding for .wav uploads."""
+    """Generic binary MIME must not bypass decoding for .wav uploads."""
     captured: dict[str, Any] = {}
 
     def fake_decode(audio_bytes, *, filename=None, content_type=None):
@@ -514,7 +514,7 @@ def test_encoded_upload_with_octet_stream_content_type_is_decoded(client, monkey
 
 @requires_ffmpeg
 def test_octet_stream_wav_container_is_detected_and_decoded():
-    """Audit private F05: RIFF magic must win over application/octet-stream.
+    """RIFF magic must win over application/octet-stream.
 
     A WAV container disguised with a generic binary MIME is decoded to the
     canonical 16 kHz mono PCM, not passed through as raw "samples".
@@ -565,7 +565,7 @@ def test_flac_container_with_octet_stream_is_decoded():
 
 
 # --------------------------------------------------------------------- #
-# Bounded ffmpeg execution (A02)
+# Bounded ffmpeg execution
 # --------------------------------------------------------------------- #
 
 
@@ -617,7 +617,7 @@ def test_bounded_ffmpeg_reaps_on_stdin_broken_pipe():
 
 
 # --------------------------------------------------------------------- #
-# Streaming body-size limit (A01) — raw ASGI level
+# Streaming body-size limit — raw ASGI level
 # --------------------------------------------------------------------- #
 
 
@@ -679,7 +679,7 @@ def _chunk(payload: bytes, more: bool = True) -> dict:
 
 
 def test_body_limit_middleware_rejects_chunked_overflow_without_content_length():
-    """No Content-Length at all: the cap is enforced while streaming (A01)."""
+    """No Content-Length at all: the cap is enforced while streaming."""
     limit = 1024
     app = _ScriptedASGI()
     wrapped = RequestBodyLimitMiddleware(app, max_body_bytes=limit)
@@ -909,7 +909,7 @@ def test_raw_pcm_passthrough_by_extension(client, monkeypatch):
 
 
 def test_form_resources_are_closed_after_success(client, monkeypatch):
-    """A09: parsed upload files must be closed on every request path."""
+    """Parsed upload files must be closed on every request path."""
     closed: list[str] = []
 
     from starlette.datastructures import UploadFile
@@ -1002,7 +1002,7 @@ def test_real_ffmpeg_rejects_garbage_with_clear_error():
         )
 
 
-def test_missing_ffmpeg_returns_400(client, monkeypatch):
+def test_missing_ffmpeg_is_a_server_error_503(client, monkeypatch):
     def fake_broken_cmd(cmd, data):
         raise FileNotFoundError("ffmpeg")
 
@@ -1012,7 +1012,7 @@ def test_missing_ffmpeg_returns_400(client, monkeypatch):
         files={"file": ("x.wav", b"RIFFdata", "audio/wav")},
         data={"model": "sherpa_onnx"},
     )
-    assert response.status_code == 400
+    assert response.status_code == 503
     assert "ffmpeg is required" in response.json()["detail"]
 
 
@@ -1106,7 +1106,7 @@ def test_language_is_not_part_of_the_model_cache_key():
 
 
 def test_cache_aliases_different_model_sources():
-    """Audit F04: distinct source identities must not collide in the cache.
+    """Distinct source identities must not collide in the cache.
 
     Two callers passing different ``models_dir`` values for the same
     canonical engine/device/platform must receive distinct strategies —
@@ -1121,7 +1121,7 @@ def test_cache_aliases_different_model_sources():
 
 
 def test_nonfinite_temperature_is_rejected(client):
-    """Audit F05: NaN/Infinity must not pass through form validation."""
+    """NaN/Infinity must not pass through form validation."""
     for value in ("nan", "inf", "-inf", "NaN", "Infinity", "-Infinity"):
         response = client.post(
             "/v1/audio/transcriptions",
@@ -1135,7 +1135,7 @@ def test_nonfinite_temperature_is_rejected(client):
 
 
 def test_platform_ineligible_engine_is_rejected_before_upload(client):
-    """Public audit F3: known engine on an ineligible platform returns 400.
+    """Known engine on an ineligible platform returns 400.
 
     ``whisperkit`` self-restricts to macOS; requesting it on Linux must
     answer a descriptive 400 before any upload processing instead of the
@@ -1184,7 +1184,7 @@ def test_platform_ineligible_engine_normalizes_aliases(client):
 
 
 def test_missing_optional_dependency_returns_structured_503(client, monkeypatch):
-    """Public audit F3: ImportError at load time becomes a structured 503.
+    """ImportError at load time becomes a structured 503.
 
     The message carries the backend's install hint; the diagnostic is also
     logged server-side.
@@ -1514,3 +1514,102 @@ def test_http_admission_precedes_parsing_and_survives_cancellation(monkeypatch):
             app.state.request_slots.release()
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------- #
+# Startup validation, error mapping, and client-facing diagnostics
+# --------------------------------------------------------------------- #
+
+
+def test_malformed_multipart_body_returns_400(client):
+    response = client.post(
+        "/v1/audio/transcriptions",
+        content=b"\x00" * 64,
+        headers={"content-type": "multipart/form-data; boundary=x"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "malformed multipart body"
+
+
+def test_ffmpeg_error_detail_strips_memory_addresses():
+    script = (
+        "import sys\n"
+        "sys.stderr.write('[in#0 @ 0x55d1c0ffee00] Error opening input\\n')\n"
+        "sys.exit(1)\n"
+    )
+    with pytest.raises(RuntimeError, match="could not decode") as error:
+        server._run_bounded_ffmpeg([server._sys_executable(), "-c", script], b"")
+    assert "0x55d1c0ffee00" not in str(error.value)
+    assert str(error.value).endswith("[in#0] Error opening input")
+
+
+def test_unknown_engine_override_fails_at_startup(monkeypatch):
+    monkeypatch.setenv("SIGNAL_ASR_ENGINE", "definitely-not-real")
+    with pytest.raises(RuntimeError, match="SIGNAL_ASR_ENGINE"):
+        server.create_app()
+
+
+def test_malformed_budget_env_fails_at_startup_not_import():
+    import os
+    import sys
+
+    env = {
+        **os.environ,
+        "SIGNAL_ASR_MAX_DECODED_SECONDS": "ten",
+        "SIGNAL_ASR_FFMPEG_TIMEOUT": "soon",
+    }
+    script = (
+        "from signal_asr import server\n"
+        "assert server.MAX_DECODED_AUDIO_BYTES == 16_000 * 2 * 600\n"
+        "try:\n"
+        "    server.validate_runtime_config()\n"
+        "except RuntimeError as exc:\n"
+        "    print(exc)\n"
+        "else:\n"
+        "    raise SystemExit('malformed configuration was accepted')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SIGNAL_ASR_MAX_DECODED_SECONDS must be an integer" in result.stdout
+
+
+def test_bounded_semaphore_rejects_over_release():
+    slot = server._BoundedSemaphore(1)
+    assert slot.try_acquire(0)
+    slot.release()
+    with pytest.raises(ValueError):
+        slot.release()
+
+
+def test_create_app_rejects_unknown_keyword_arguments():
+    with pytest.raises(TypeError, match="model_dir"):
+        server.create_app(model_dir="models")
+
+
+def test_injected_platform_is_used_for_early_platform_check():
+    with TestClient(server.create_app(platform="macos")) as client:
+        response = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("x.pcm", b"\x00\x01", "audio/pcm")},
+            data={"model": "whisperkit"},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"text": "transcribed:whisperkit"}
+    assert _factory_configs()[0]["platform"] == "macos"
+
+
+def test_backend_configuration_error_returns_sanitized_500(client, monkeypatch):
+    def bad_config(self):
+        raise ValueError("unsupported device 'cuda:7' at /opt/internal/path")
+
+    monkeypatch.setattr(FakeStrategy, "load_model", bad_config)
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("x.pcm", b"\x00\x01", "audio/pcm")},
+        data={"model": "sherpa_onnx"},
+    )
+    assert response.status_code == 500
+    assert response.json() == {"detail": "transcription backend is misconfigured"}
+    assert "/opt/internal" not in response.text
