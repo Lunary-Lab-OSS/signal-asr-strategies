@@ -36,7 +36,7 @@ sherpa-onnx = [
     "onnxruntime-gpu>=1.18.0 ; sys_platform != 'darwin'",
 ]
 macos = []
-# A04: every extra that promises a cold-cache sherpa backend must also
+# Every extra that promises a cold-cache sherpa backend must also
 # provide the downloader it imports (huggingface-hub).
 linux = [
     "sherpa-onnx==1.13.8",
@@ -122,7 +122,7 @@ markers = [
 [tool.coverage.run]
 source = ["signal_asr"]
 branch = true
-# A16: no module-wide omits. macOS/Windows-only branches are covered by
+# No module-wide omits. macOS/Windows-only branches are covered by
 # unit tests through injectable seams; real hardware paths run in the
 # integration track.
 

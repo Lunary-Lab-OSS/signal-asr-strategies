@@ -1,208 +1,193 @@
 # signal-asr-strategies
 
-Cross-platform speech recognition behind one strategy interface, built for the
-[Signal Switchboard](https://github.com/Lunary-Lab-OSS) voice-agent stack.
+[![ci](https://github.com/Lunary-Lab-OSS/signal-asr-strategies/actions/workflows/ci.yml/badge.svg)](https://github.com/Lunary-Lab-OSS/signal-asr-strategies/actions/workflows/ci.yml)
+[![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 
-Backends:
+Local speech-to-text for Python with one interface for every platform. It picks the best on-device engine for the host (Apple Neural Engine on macOS, NVIDIA Parakeet through ONNX Runtime on Linux and WSL2, and faster-whisper anywhere), and it ships with an OpenAI-compatible transcription server.
 
-- **WhisperKit** (Core ML / Apple Neural Engine) on macOS
-- **sherpa-onnx** with NVIDIA Parakeet TDT on Linux, WSL2, and CUDA
-- **faster-whisper** (CTranslate2) as a cross-platform CPU/GPU fallback
-- **NVIDIA NeMo Parakeet** source retained, but unsupported (dependency advisory blockers)
-- An **OpenAI-compatible local transcription server** (`/v1/audio/transcriptions`)
+Part of the [Signal Switchboard](https://github.com/Lunary-Lab-OSS) voice-agent stack.
 
-## Install
+## Features
+
+- **One API, several backends.** Swap engines with a config value. Engine names are normalised (`sherpa-onnx`, `SHERPA_ONNX`, and `sherpa_onnx` all mean the same backend), and an unknown name raises a clear error.
+- **Platform-aware defaults.** WhisperKit (Core ML) on macOS; sherpa-onnx with NVIDIA Parakeet TDT on Linux, WSL2, and Windows.
+- **OpenAI-compatible server.** A `POST /v1/audio/transcriptions` endpoint works with existing OpenAI SDKs and tools. It accepts WAV, MP3, and other ffmpeg-decodable formats, as well as raw PCM.
+- **Built for real workloads.** Streaming upload limits, bounded ffmpeg decoding, admission control with `503 Retry-After` under load, and a reference-counted model cache with single-flight loading.
+- **Reproducible.** Fully locked dependencies (`uv.lock`), pinned model revisions, and a non-root container image with a health check.
+
+## Backends
+
+| Engine | Name | Runs on | Devices |
+|---|---|---|---|
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) + NVIDIA Parakeet TDT 0.6B v3 | `sherpa_onnx` | Linux, WSL2, Windows | `cpu`, `cuda` |
+| [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2) | `whisper` | Linux, WSL2, Windows, macOS | `cpu`, `cuda`, `cuda:<n>`, `auto` |
+| [WhisperKit](https://github.com/argmaxinc/WhisperKit) (Core ML / ANE) | `whisperkit` | macOS (Apple Silicon) | Neural Engine |
+
+With no engine set, macOS uses `whisperkit` and every other platform uses `sherpa_onnx`. To pick a GPU for sherpa-onnx, set `CUDA_VISIBLE_DEVICES`.
+
+## Installation
+
+Requires Python 3.12+ and `ffmpeg` on `PATH` (the server uses it for encoded audio).
+
+Install straight from GitHub with the extras you need:
 
 ```bash
-pip install signal-asr-strategies            # core (numpy, requests)
-pip install "signal-asr-strategies[server]"  # + fastapi/uvicorn local server
-pip install "signal-asr-strategies[cpu,server]" # CPU sherpa + downloader + server
-pip install "signal-asr-strategies[linux]"   # GPU-oriented dependencies; verify provider availability
-pip install "signal-asr-strategies[wsl2]"    # same as [linux]
-pip install "signal-asr-strategies[whisper]" # + faster-whisper
-pip install "signal-asr-strategies[macos]"   # core only; brew install whisperkit-cli
+# CPU transcription (sherpa-onnx) + OpenAI-compatible server
+pip install "signal-asr-strategies[cpu,server] @ git+https://github.com/Lunary-Lab-OSS/signal-asr-strategies.git"
 ```
 
-Every extra that promises a cold-cache sherpa backend also installs the
-`huggingface-hub` downloader it imports.
+| Extra | Adds |
+|---|---|
+| `cpu` | sherpa-onnx (CPU) and the Hugging Face model downloader |
+| `server` | FastAPI, Uvicorn, and multipart upload support |
+| `whisper` | faster-whisper |
+| `linux`, `wsl2` | sherpa-onnx with ONNX Runtime GPU |
+| `cuda` | sherpa-onnx with ONNX Runtime GPU, plus faster-whisper |
+| `all` | Every backend that can be installed with pip |
+| `macos` | Nothing extra; install WhisperKit with `brew install whisperkit-cli` |
 
-For reproducible source installs use `uv sync --locked --no-dev --extra cpu
---extra server` with uv 0.10.12. Every sherpa profile explicitly pins both
-`sherpa-onnx==1.13.8` and `sherpa-onnx-core==1.13.8`: the installed upstream
-sherpa wheel metadata requires that exact core version. The lock records
-registry provenance and artifact hashes; installing an unrelated ONNX Runtime
-GPU wheel does not add CUDA support to a CPU sherpa wheel.
+For a reproducible environment from source, use [uv](https://docs.astral.sh/uv/):
 
-## Usage
+```bash
+git clone https://github.com/Lunary-Lab-OSS/signal-asr-strategies.git
+cd signal-asr-strategies
+uv sync --locked --extra cpu --extra server
+```
+
+## Quick start
 
 ```python
 from signal_asr import ASRComponent, ASRConfig
 
-asr = ASRComponent(ASRConfig())  # platform auto-detected
-asr.load_model()
-text = asr.transcribe(raw_pcm_bytes)  # 16 kHz mono s16le PCM
+asr = ASRComponent(ASRConfig())          # engine auto-selected for this platform
+asr.load_model()                         # optional; the first transcribe() loads lazily
+
+text = asr.transcribe(pcm_bytes)         # 16 kHz, mono, signed 16-bit little-endian PCM
+print(asr.platform, "->", text)
+
+asr.close()
 ```
 
-The engine can be pinned with `ASRConfig(engine="whisper")` etc.; unknown
-engine names raise `ValueError` instead of silently selecting a default.
-Aliases like `SHERPA-ONNX` / `sherpa-onnx` / `sherpa_onnx` normalise to one
-canonical backend.
+Pin an engine and device:
 
-### Device selection
+```python
+asr = ASRComponent(ASRConfig(engine="whisper", language="en"), device="cuda")
+```
 
-- `whisper`: `cpu` (int8), `cuda`, `cuda:<index>` (float16), `auto`.
-  Unsupported names raise; the compute type is validated per device.
-- `sherpa_onnx`: `cpu` or `cuda` (pick a GPU with `CUDA_VISIBLE_DEVICES`;
-  indexed devices are rejected because sherpa-onnx has no index API).
-- `parakeet`: `cpu`, `cuda`, `cuda:<index>`, `auto` — the model is moved to
-  the requested device after load.
+The Parakeet model is fetched at a pinned revision on first use into `./models`, or into `SIGNAL_ASR_MODELS_DIR` if set. Every strategy is safe to call from several threads: concurrent first calls trigger exactly one model load.
 
-### Local OpenAI-compatible server
+## Transcription server
 
 ```bash
 signal-asr-server --host 127.0.0.1 --port 18500
-# or via environment:
-SIGNAL_ASR_HOST=127.0.0.1 SIGNAL_ASR_PORT=18500 signal-asr-server
+```
 
+```bash
 curl http://127.0.0.1:18500/v1/audio/transcriptions \
   -F model=sherpa_onnx \
   -F file=@sample.wav
 # {"text": "..."}
 ```
 
-Supported: `response_format=json|text|verbose_json` (`srt`/`vtt` return a
-clear 400). Unsupported today: `prompt`, `temperature` (accepted for API
-shape parity, not interpreted) and timestamps (`verbose_json` returns
-`duration: null`, empty segments).
+Or use the official OpenAI SDK:
 
-Resource-safety contract (tested):
+```python
+from openai import OpenAI
 
-- The request body is capped **while streaming** (default 25 MiB file /
-  27 MiB body) — oversized chunked uploads without `Content-Length` are
-  rejected with 413 before multipart buffering.
-- ffmpeg decoding runs with a decoded-PCM budget, bounded stderr, a
-  pipe-only protocol allowlist, and a watchdog that kills and reaps
-  runaway decoders.
-- Concurrent decode and inference slots are bounded; overload returns
-  **503** with `Retry-After` instead of queueing without limit.
-- The `language` form field is validated (ISO code) and applied per
-  request — it never keys the model cache.
-- Strategies are cached per engine/device/platform with single-flight
-  loading; evicted models are closed only when idle.
+client = OpenAI(base_url="http://127.0.0.1:18500/v1", api_key="unused")
+with open("sample.mp3", "rb") as f:
+    result = client.audio.transcriptions.create(model="sherpa_onnx", file=f)
+print(result.text)
+```
 
-Native inference and model loading are not generally interruptible. Admission
-and ffmpeg deadlines are not hard execution deadlines for these backends;
-process isolation and an external supervisor are needed for hard runtime/RAM
-limits. The server has no built-in authentication. Before non-loopback access,
-deploy an authenticated TLS reverse proxy, network access controls, and
-operator-selected rate/resource limits. Do not expose it directly to the Internet.
+**Request fields**
 
-> **Behaviour change vs 0.1:** uploads sent as `application/octet-stream`
-> with no (or a generic) filename are now treated as *encoded* audio and
-> decoded by ffmpeg instead of passed through as raw PCM. Send raw PCM
-> with an explicit `audio/pcm` content type or a `.pcm`/`.raw`/`.s16le`
-> filename.
+| Field | Notes |
+|---|---|
+| `file` | Required. Encoded audio is decoded with ffmpeg. For raw 16 kHz s16le PCM, send `Content-Type: audio/pcm` or a `.pcm` / `.raw` / `.s16le` filename. |
+| `model` | `sherpa_onnx`, `whisper`, or `whisperkit` (aliases accepted). |
+| `language` | Optional ISO language code such as `en` or `pt-BR`, applied per request. |
+| `response_format` | `json` (default), `text`, or `verbose_json`. |
+| `prompt`, `temperature` | Accepted for OpenAI SDK compatibility. |
 
-### Environment variables
+**Status codes**
+
+| Code | Meaning |
+|---|---|
+| `400` | Invalid request: undecodable audio, malformed form, unknown model, or unsupported format |
+| `413` | Upload larger than 25 MiB |
+| `503` | All decode or inference slots are busy (`Retry-After: 5`), or ffmpeg is unavailable |
+
+`GET /health` returns `200` when the server is ready.
+
+### Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SIGNAL_ASR_HOST` / `SIGNAL_ASR_PORT` | `127.0.0.1` / `18500` | server bind |
-| `SIGNAL_ASR_DEVICE` | `cpu` | default device for the server |
-| `SIGNAL_ASR_ENGINE` | – | force one backend for all requests |
-| `SIGNAL_ASR_CACHE_MAX` | `8` | loaded-strategy cache capacity (≥1) |
-| `SIGNAL_ASR_MAX_CONCURRENT_DECODE` | `2` | concurrent ffmpeg decodes |
-| `SIGNAL_ASR_MAX_CONCURRENT_INFERENCE` | `2` | concurrent transcriptions |
-| `SIGNAL_ASR_QUEUE_TIMEOUT_SECONDS` | `30` | admission deadline before 503 |
-| `SIGNAL_ASR_MAX_DECODED_SECONDS` | `600` | decoded-PCM budget (seconds) |
-| `SIGNAL_ASR_FFMPEG_TIMEOUT` | `60` | per-request ffmpeg deadline |
-| `SIGNAL_ASR_MODELS_DIR` | `models` | model download directory |
-| `SIGNAL_WHISPERKIT_PORT` | `50060` | whisperkit-cli serve port |
+| `SIGNAL_ASR_HOST` / `SIGNAL_ASR_PORT` | `127.0.0.1` / `18500` | Bind address |
+| `SIGNAL_ASR_DEVICE` | `cpu` | Device for loaded models |
+| `SIGNAL_ASR_ENGINE` | auto | Force one engine for every request |
+| `SIGNAL_ASR_MODELS_DIR` | `models` | Model download directory |
+| `SIGNAL_ASR_CACHE_MAX` | `8` | Loaded-model cache capacity |
+| `SIGNAL_ASR_MAX_CONCURRENT_DECODE` | `2` | Concurrent ffmpeg decodes |
+| `SIGNAL_ASR_MAX_CONCURRENT_INFERENCE` | `2` | Concurrent transcriptions |
+| `SIGNAL_ASR_QUEUE_TIMEOUT_SECONDS` | `30` | Time a request may wait for a slot |
+| `SIGNAL_ASR_MAX_DECODED_SECONDS` | `600` | Maximum decoded audio length per request |
+| `SIGNAL_ASR_FFMPEG_TIMEOUT` | `60` | Per-request decode deadline (seconds) |
+| `SIGNAL_WHISPERKIT_PORT` | `50060` | Port for the managed `whisperkit-cli` process |
 
-Malformed values fail fast at startup with a clear error.
+Invalid values are rejected at startup with a descriptive error.
+
+The server binds to loopback by default and has no built-in authentication. For access from other machines, put it behind an authenticated TLS reverse proxy.
 
 ### Docker
 
 ```bash
 docker build -t signal-asr .
-docker run --rm -p 127.0.0.1:18500:18500 signal-asr
-# port override stays consistent with the health check:
-docker run --rm -p 127.0.0.1:18601:18601 -e SIGNAL_ASR_PORT=18601 signal-asr
+docker run --rm -p 127.0.0.1:18500:18500 -v asr-models:/models signal-asr
 ```
 
-The image runs as a non-root user, installs only runtime dependencies
-(no tests), and includes the GPL-3.0 license.
-Docker and CI select the same locked `cpu,server` runtime. Python base-image
-and OS package digests are not pinned; dependency locking alone does not make
-the entire image byte-reproducible. Model downloads are separate from uv.lock.
+The image runs as an unprivileged user, installs only the locked `cpu,server` runtime, and has a health check on `/health`. If you set `SIGNAL_ASR_PORT`, the health check follows it. Mount `/models` to keep downloaded models between runs.
+
+## Architecture
+
+```
+signal_asr/
+├── component.py        ASRComponent: high-level facade
+├── config.py           ASRConfig / ModelConfig dataclasses (dependency-free)
+├── server.py           OpenAI-compatible FastAPI app and CLI entry point
+└── strategies/
+    ├── base.py         ASRStrategy interface + thread-safe lazy loading
+    ├── factory.py      Platform detection and engine selection
+    ├── sherpa_onnx.py  NVIDIA Parakeet TDT through sherpa-onnx
+    ├── whisper.py      faster-whisper
+    └── whisperkit.py   WhisperKit server lifecycle (macOS)
+```
+
+To add a backend, subclass `ASRStrategy`, implement `load_model()` and `transcribe()` (override `shutdown()` if it holds resources), and register it in `ASRStrategyFactory`.
 
 ## Development
 
 ```bash
-uv sync --locked --extra dev --extra server
-uv run --locked --extra dev --extra server pytest tests/ -q -m "not integration" --cov=signal_asr --cov-fail-under=85
-uv run --locked --extra dev --extra server mypy signal_asr
+uv sync --locked --extra dev --extra server --extra cpu
+uv run --locked --extra dev --extra server --extra cpu pytest tests/ -m "not integration" --cov=signal_asr
+uv run --locked --extra dev --extra server --extra cpu mypy signal_asr
 uvx ruff@0.15.14 check . && uvx ruff@0.15.14 format --check .
 ```
 
-Integration tests (real models, real container):
+End-to-end tests download a real model and run real speech through the library, the server, and the container image:
 
 ```bash
-SIGNAL_ASR_INTEGRATION=1 uv run --locked --extra dev --extra server --extra cpu pytest tests/test_integration.py -q
+SIGNAL_ASR_INTEGRATION=1 uv run --locked --extra dev --extra server --extra cpu pytest tests/test_integration.py
 ```
 
-Platform support is covered through injectable seams on all hosts
-(Windows CUDA DLL discovery, macOS WhisperKit server lifecycle, and the
-Parakeet pipeline). The Linux CPU integration track additionally executes
-sherpa-onnx and the container end to end. Compatibility evidence tracks
-the exact coverage supplied by each check, including paths exercised by
-earlier validation, rather than treating compatibility as an assumption.
+CI runs linting, type checking, unit tests with a coverage gate, a package build, a dependency audit of every extra, and the container integration test on each pull request.
 
-Speech fixtures are synthesized with espeak-ng, not human recordings. CI
-requires ffmpeg, espeak-ng, Docker, and sherpa imports and rejects skipped
-speech/container cases rather than accepting tone-only success.
+## Contributing
 
-## Compatibility evidence
-
-| Backend | Linux | WSL2 | Windows | macOS |
-|---|---|---|---|---|
-| sherpa-onnx | CPU integration track; CUDA seam coverage | CPU path; GPU seam coverage | Seam coverage | Seam coverage |
-| faster-whisper | Unit and integration seams | Seam coverage | Seam coverage | Seam coverage |
-| WhisperKit | Unsupported | Unsupported | Unsupported | Apple Silicon lifecycle coverage |
-| Parakeet (NeMo) | Dependency-bound seam coverage | Unsupported | Unsupported | Unsupported |
-
-Dependency CI audits core and every remaining extra (server, CPU, Whisper,
-sherpa, macOS, Linux, WSL2, CUDA, all). Audit each profile on its target platform for platform-specific
-dependency evidence. Audit failures, unknown packages, and registry/advisory errors
-remain blocking; no CVE ignores are configured.
-
-### Dependency migration (2026-09-17)
-
-The `parakeet` extra is removed; `cuda` and `all` no longer install NeMo.
-NeMo 3.0.0 (latest checked on PyPI) requires `hydra-core>1.3,<=1.3.2`
-and `lightning>2.2.1,<=2.4.0` through its ASR extra. These constraints cannot
-resolve with the advisory fixes without unsupported dependency overrides:
-
-- [PYSEC-2026-3850](https://osv.dev/vulnerability/PYSEC-2026-3850):
-  Hydra versions below 1.3.4 affected; fixed in 1.3.4.
-- [PYSEC-2026-3972](https://osv.dev/vulnerability/PYSEC-2026-3972):
-  Lightning through 2.6.0 affected; no fixed event recorded.
-- [PYSEC-2026-3624](https://osv.dev/vulnerability/PYSEC-2026-3624):
-  Lightning below 2.6.6 affected; fixed in 2.6.6.
-
-Migrate to `cpu,server` with `engine="sherpa_onnx"` and a compatible ONNX
-Parakeet model, or `whisper,server` with `engine="whisper"`. A NeMo checkpoint
-is not interchangeable with an ONNX model. The retained `parakeet` source and
-unit seams do not imply a supported installation; do not manually install the
-vulnerable dependency set. Restoration requires upstream-compatible patched
-constraints, a clean audit and real backend validation.
-
-Local verification of this dependency migration: all ten CI runtime profile
-exports passed `uv lock --check` and the exact strict pip-audit 2.9.0 CI command
-on Linux. Python 3.13 unit suite: 250 passed, 1 skipped, 5 deselected; coverage
-90.32%. Mypy passed. Python 3.12, container/model integration and non-Linux
-hardware were not rerun for this migration; this is not release approval.
+Issues and pull requests are welcome. Please run the checks above before you open a PR. To report a security issue, follow the [security policy](https://github.com/Lunary-Lab-OSS/.github/blob/main/.github/SECURITY.md).
 
 ## License
 
-GPL-3.0-or-later. Model weights keep their own upstream licenses.
+[GPL-3.0-or-later](LICENSE). Model weights keep their own upstream licenses.
