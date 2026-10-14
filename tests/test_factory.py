@@ -1,4 +1,4 @@
-"""Tests for the ASR strategy factory (A07/A12)."""
+"""Tests for the ASR strategy factory."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def test_factory_normalize_engine_alias():
 
 
 def test_component_platform_defaults_to_autodetection(monkeypatch):
-    """A07: the component must not force a platform on the factory."""
+    """The component must not force a platform on the factory."""
     from signal_asr.component import ASRComponent
     from signal_asr.strategies import factory as factory_module
 

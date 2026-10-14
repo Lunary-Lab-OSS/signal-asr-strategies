@@ -268,7 +268,7 @@ def test_whisperkit_bounded_subprocess_success():
 
 
 def test_whisper_injected_model_loader_takes_precedence(tmp_path):
-    """Audit private F08: ``model_loader`` is a public construction seam.
+    """``model_loader`` is a public construction seam.
 
     When a loader callable is supplied it must be used to instantiate the
     model instead of silently downloading the default weights; its return
@@ -287,3 +287,85 @@ def test_whisper_injected_model_loader_takes_precedence(tmp_path):
     assert calls[0][1] == "cpu"
     assert strategy.model is sentinel
     assert strategy.is_loaded
+
+
+def test_whisperkit_odd_length_chunk_writes_aligned_wav(monkeypatch):
+    import os
+    import wave
+
+    strategy = WhisperKitASRStrategy(ASRConfig(), "cpu", "macos")
+    strategy.model = {"engine": "whisperkit"}
+    captured: dict[str, object] = {}
+
+    def fake_cli(path, language=None):
+        with wave.open(path, "rb") as wf:
+            captured["frames"] = wf.readframes(wf.getnframes())
+        captured["size"] = os.path.getsize(path)
+        return "ok"
+
+    monkeypatch.setattr(strategy, "_transcribe_cli", fake_cli)
+    assert strategy.transcribe(b"\x01\x00\x02\x00\x03") == "ok"
+    assert captured["frames"] == b"\x01\x00\x02\x00"
+    assert captured["size"] % 2 == 0
+    # Half a sample: nothing remains after alignment and no WAV is written.
+    captured.clear()
+    assert strategy.transcribe(b"\x01") == ""
+    assert captured == {}
+
+
+def test_concurrent_first_transcribe_loads_model_once():
+    import threading
+    import time
+
+    calls: list[int] = []
+    gate = threading.Barrier(8)
+
+    class _Model:
+        def transcribe(self, path, **kwargs):
+            return [SimpleNamespace(text="hi")], None
+
+    def loader(config, device, platform):
+        calls.append(1)
+        time.sleep(0.05)
+        return _Model()
+
+    strategy = WhisperASRStrategy(ASRConfig(engine="whisper"), loader, "cpu", "linux")
+    results: list[str] = []
+
+    def worker():
+        gate.wait()
+        results.append(strategy.transcribe(b"\x00\x00" * 160))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert len(calls) == 1
+    assert results == ["hi"] * 8
+
+
+@pytest.mark.parametrize("engine_cls", ["whisperkit", "sherpa_onnx"])
+def test_lazy_load_goes_through_serialised_loader(engine_cls, monkeypatch):
+    if engine_cls == "whisperkit":
+        strategy = WhisperKitASRStrategy(ASRConfig(), "cpu", "macos")
+    else:
+        strategy = SherpaOnnxASRStrategy(ASRConfig(), "cpu", "linux")
+    entered: list[bool] = []
+
+    def fake_load():
+        entered.append(strategy._load_lock.locked())
+        raise RuntimeError("stop after load")
+
+    monkeypatch.setattr(strategy, "load_model", fake_load)
+    with pytest.raises(RuntimeError, match="stop after load"):
+        strategy.transcribe(b"\x00\x00")
+    assert entered == [True]
+
+
+def test_sherpa_default_models_dir_is_platform_independent(monkeypatch):
+    from signal_asr.strategies import sherpa_onnx
+
+    monkeypatch.delenv("SIGNAL_ASR_MODELS_DIR", raising=False)
+    monkeypatch.setattr(sherpa_onnx.sys, "platform", "win32")
+    assert SherpaOnnxASRStrategy._default_models_dir() == Path("models")

@@ -29,7 +29,7 @@ def canonical_engine(name: str | None) -> str | None:
 
     Equivalent spellings (``SHERPA_ONNX``, ``sherpa-onnx``, ``sherpa_onnx``)
     normalise to the same canonical value so callers and caches key on one
-    identity per backend (A12).
+    identity per backend.
     """
     normalized = (name or "").strip().lower()
     if not normalized:
@@ -93,7 +93,7 @@ class ASRStrategyFactory:
         """
         raw_engine = (self.config.engine or "").strip()
         if raw_engine and canonical_engine(raw_engine) is None:
-            # Unknown engines are rejected loudly (A12); a typo must not
+            # Unknown engines are rejected loudly; a typo must not
             # silently select the platform default backend.
             raise ValueError(
                 f"unknown ASR engine {self.config.engine!r}; expected one of "

@@ -76,7 +76,7 @@ class ParakeetASRStrategy(ASRStrategy):
 
         # Apply the requested placement explicitly and switch to eval mode.
         # ``self.model`` is only published once initialisation fully
-        # succeeded, so a failed load leaves ``is_loaded`` False (A05).
+        # succeeded, so a failed load leaves ``is_loaded`` False.
         if target_device is not None:
             model.to(target_device)
         model.eval()
@@ -105,8 +105,7 @@ class ParakeetASRStrategy(ASRStrategy):
         del language
         if not audio_chunk:
             return ""
-        if self.model is None:
-            self.load_model()
+        self._ensure_loaded()
 
         torch = _load_torch()
         model = self.model
@@ -118,7 +117,11 @@ class ParakeetASRStrategy(ASRStrategy):
             if not audio_chunk:
                 return ""
 
-        signal = torch.frombuffer(audio_chunk, dtype=torch.int16).to(torch.float32) / 32768.0
+        # ``torch.frombuffer`` warns on read-only buffers such as ``bytes``;
+        # copy into a writable ``bytearray`` first.
+        signal = (
+            torch.frombuffer(bytearray(audio_chunk), dtype=torch.int16).to(torch.float32) / 32768.0
+        )
         input_signal = signal.unsqueeze(0)
 
         try:
@@ -128,9 +131,6 @@ class ParakeetASRStrategy(ASRStrategy):
 
         input_signal = input_signal.to(model_device)
         length = torch.tensor([input_signal.shape[1]], device=model_device, dtype=torch.long)
-
-        if length.item() == 0:
-            return ""
 
         with torch.no_grad():
             processed, proc_len = model.preprocessor(input_signal=input_signal, length=length)
@@ -145,7 +145,7 @@ class ParakeetASRStrategy(ASRStrategy):
         # NeMo hypotheses always carry a ``.text`` attribute. An absent or
         # non-string attribute means the backend contract changed — that is
         # an error to surface, not something to stringify into the
-        # transcript. An empty transcript is legitimate and returned (A06).
+        # transcript. An empty transcript is legitimate and returned.
         hypothesis = hyps[0]
         text = getattr(hypothesis, "text", None)
         if not isinstance(text, str):

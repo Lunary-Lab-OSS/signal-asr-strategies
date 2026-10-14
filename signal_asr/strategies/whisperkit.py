@@ -126,8 +126,13 @@ class WhisperKitASRStrategy(ASRStrategy):
     def transcribe(self, audio_chunk: bytes, language: str | None = None) -> str:
         if not audio_chunk:
             return ""
-        if self.model is None:
-            self.load_model()
+        self._ensure_loaded()
+        # Drop a trailing partial 16-bit sample; an odd-length data chunk
+        # would produce a malformed (unpadded) RIFF/WAV file.
+        if len(audio_chunk) % 2:
+            audio_chunk = audio_chunk[:-1]
+            if not audio_chunk:
+                return ""
         language = language if language is not None else self.config.language
         path = save_audio_to_wav(audio_chunk)
         try:

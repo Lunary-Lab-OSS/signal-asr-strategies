@@ -95,8 +95,7 @@ class WhisperASRStrategy(ASRStrategy):
             return
         if self._model_loader is not None:
             # Caller-supplied loader wins over config-driven sources so
-            # deployments can inject models without reaching the network
-            # (audit private F08).
+            # deployments can inject models without reaching the network.
             self.model = self._model_loader(self.config, self.device, self.platform)
             return
         descriptor = self.config.model_priority[0] if self.config.model_priority else None
@@ -145,8 +144,7 @@ class WhisperASRStrategy(ASRStrategy):
     def transcribe(self, audio_chunk: bytes, language: str | None = None) -> str:
         if not audio_chunk:
             return ""
-        if self.model is None:
-            self.load_model()
+        self._ensure_loaded()
         model = self.model
         assert model is not None
 

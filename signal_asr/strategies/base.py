@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -18,13 +19,15 @@ class ASRStrategy(ABC):
         """
         Args:
             config:   ASR configuration.
-            device:   Compute device, e.g. "cuda:0", "mps", "cpu".
+            device:   Compute device, e.g. "cpu", "cuda", "cuda:0"; each
+                      backend validates the values it supports.
             platform: Operating system slug: "windows", "macos", "linux", "wsl2".
         """
         self.config = config
         self.device = device
         self.platform = platform
         self.model: Any | None = None
+        self._load_lock = threading.Lock()
 
     @abstractmethod
     def load_model(self) -> None:
@@ -48,6 +51,18 @@ class ASRStrategy(ABC):
         Raises:
             Exception: Backend loading or decoding failed.
         """
+
+    def _ensure_loaded(self) -> None:
+        """Load the model once, even when several threads transcribe at once.
+
+        Lazy loading from :meth:`transcribe` is serialised so concurrent first
+        calls do not load the weights (or spawn a backend process) twice.
+        """
+        if self.model is not None:
+            return
+        with self._load_lock:
+            if self.model is None:
+                self.load_model()
 
     def shutdown(self) -> None:
         self.model = None
