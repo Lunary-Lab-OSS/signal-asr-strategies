@@ -1,8 +1,8 @@
 """Property-based tests with complete reference predicates.
 
 Each property compares the implementation against an independently written
-reference over generated inputs, including negative cases — a crash-only
-oracle is not acceptable (remediation: test-quality overhaul).
+reference over generated inputs, including negative cases, rather than only
+checking that the code does not crash.
 """
 
 from __future__ import annotations
